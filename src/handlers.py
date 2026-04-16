@@ -2,6 +2,7 @@ import logging
 
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -64,6 +65,26 @@ def back_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="◀️ В меню", callback_data="action:back")],
     ])
 
+async def _safe_edit_text(
+    callback: CallbackQuery,
+    text: str,
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    parse_mode: str | None = None,
+) -> None:
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode,
+        )
+    except TelegramBadRequest as e:
+        # Happens when user taps the same button twice:
+        # "message is not modified"
+        if "message is not modified" in str(e):
+            return
+        raise
+
 
 @router.message(CommandStart())
 async def cmd_start(message: Message) -> None:
@@ -77,41 +98,52 @@ async def cmd_help(message: Message) -> None:
 
 @router.callback_query(F.data == "action:create")
 async def action_create(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
+    # Answer ASAP to avoid "query is too old"
+    await callback.answer()
+    await _safe_edit_text(
+        callback,
         "📸 Отправь фото — AI сделает документное фото.",
         reply_markup=back_kb(),
     )
-    await callback.answer()
 
 
 @router.callback_query(F.data == "action:help")
 async def action_help(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
-        INSTRUCTION_TEXT, reply_markup=back_kb(), parse_mode="HTML"
-    )
     await callback.answer()
+    await _safe_edit_text(
+        callback,
+        INSTRUCTION_TEXT,
+        reply_markup=back_kb(),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "help:requirements")
 async def help_requirements(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
-        REQUIREMENTS_TEXT, reply_markup=back_kb(), parse_mode="HTML"
-    )
     await callback.answer()
+    await _safe_edit_text(
+        callback,
+        REQUIREMENTS_TEXT,
+        reply_markup=back_kb(),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "help:tips")
 async def help_tips(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(
-        TIPS_TEXT, reply_markup=back_kb(), parse_mode="HTML"
-    )
     await callback.answer()
+    await _safe_edit_text(
+        callback,
+        TIPS_TEXT,
+        reply_markup=back_kb(),
+        parse_mode="HTML",
+    )
 
 
 @router.callback_query(F.data == "action:back")
 async def action_back(callback: CallbackQuery) -> None:
-    await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_kb())
     await callback.answer()
+    await _safe_edit_text(callback, WELCOME_TEXT, reply_markup=main_kb())
 
 
 @router.message(F.photo)
