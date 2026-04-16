@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 BOTHUB_BASE_URL = "https://openai.bothub.chat/v1"
 MODEL = "gemini-3-pro-image-preview"
 MAX_DIMENSION = 1024
+SERVICE_UNAVAILABLE_TEXT = "Сервис временно недоступен. Попробуйте позже."
 
 
 class AIProcessingError(Exception):
@@ -82,19 +83,19 @@ class AIProcessor:
         except AuthenticationError:
             raise AIProcessingError("Неверный BOTHUB_API_KEY. Проверь ключ и попробуй ещё раз.")
         except RateLimitError:
-            raise AIProcessingError("Лимит запросов исчерпан. Попробуй позже.")
+            raise AIProcessingError(SERVICE_UNAVAILABLE_TEXT)
         except APITimeoutError:
-            raise AIProcessingError("Таймаут при обработке изображения. Попробуй ещё раз.")
+            raise AIProcessingError(SERVICE_UNAVAILABLE_TEXT)
         except APIConnectionError:
-            raise AIProcessingError("Не удалось подключиться к AI-сервису. Попробуй ещё раз.")
+            raise AIProcessingError(SERVICE_UNAVAILABLE_TEXT)
         except BadRequestError:
-            raise AIProcessingError("AI-сервис отклонил запрос. Попробуй другое фото.")
+            raise AIProcessingError("Не удалось обработать это фото. Попробуй другое фото.")
         except APIStatusError as e:
-            # e.status_code is usually available; keep message short for user
-            raise AIProcessingError(f"Ошибка AI-сервиса ({getattr(e, 'status_code', '???')}). Попробуй ещё раз.")
-        except Exception as e:
+            logger.warning("AI service status error: %s", getattr(e, "status_code", None))
+            raise AIProcessingError(SERVICE_UNAVAILABLE_TEXT)
+        except Exception:
             logger.exception("BotHub API call failed")
-            raise AIProcessingError("Неожиданная ошибка AI-сервиса. Попробуй ещё раз.")
+            raise AIProcessingError(SERVICE_UNAVAILABLE_TEXT)
 
         message = response.choices[0].message
 
