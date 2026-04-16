@@ -61,7 +61,7 @@ TIPS_TEXT = (
 
 def back_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="action:back")],
+        [InlineKeyboardButton(text="◀️ В меню", callback_data="action:back")],
     ])
 
 
@@ -124,11 +124,14 @@ async def handle_photo(message: Message, bot: Bot, ai: AIProcessor) -> None:
     try:
         result_bytes = await ai.generate_document_photo(photo_bytes)
     except AIProcessingError as e:
-        await status.edit_text(f"❌ {e}")
+        await status.edit_text(f"❌ {e}", reply_markup=back_kb())
         return
     except Exception:
         logger.exception("AI processing failed")
-        await status.edit_text("❌ Ошибка генерации. Попробуй ещё раз.")
+        await status.edit_text(
+            "❌ Ошибка генерации. Попробуй ещё раз.",
+            reply_markup=back_kb(),
+        )
         return
 
     await message.answer_photo(

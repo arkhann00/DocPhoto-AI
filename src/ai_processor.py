@@ -4,7 +4,15 @@ import base64
 import io
 import logging
 
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    RateLimitError,
+)
 from PIL import Image
 
 from src.constants import AI_PROMPT
@@ -71,9 +79,22 @@ class AIProcessor:
                     "response_modalities": ["IMAGE", "TEXT"],
                 },
             )
+        except AuthenticationError:
+            raise AIProcessingError("Неверный BOTHUB_API_KEY. Проверь ключ и попробуй ещё раз.")
+        except RateLimitError:
+            raise AIProcessingError("Лимит запросов исчерпан. Попробуй позже.")
+        except APITimeoutError:
+            raise AIProcessingError("Таймаут при обработке изображения. Попробуй ещё раз.")
+        except APIConnectionError:
+            raise AIProcessingError("Не удалось подключиться к AI-сервису. Попробуй ещё раз.")
+        except BadRequestError:
+            raise AIProcessingError("AI-сервис отклонил запрос. Попробуй другое фото.")
+        except APIStatusError as e:
+            # e.status_code is usually available; keep message short for user
+            raise AIProcessingError(f"Ошибка AI-сервиса ({getattr(e, 'status_code', '???')}). Попробуй ещё раз.")
         except Exception as e:
             logger.exception("BotHub API call failed")
-            raise AIProcessingError(f"Ошибка API: {e}")
+            raise AIProcessingError("Неожиданная ошибка AI-сервиса. Попробуй ещё раз.")
 
         message = response.choices[0].message
 
