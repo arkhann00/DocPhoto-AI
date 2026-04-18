@@ -166,9 +166,20 @@ async def handle_photo(message: Message, bot: Bot, ai: AIProcessor) -> None:
         )
         return
 
+    if result_bytes.startswith(b"\x89PNG"):
+        out_name = "document_photo.png"
+    elif result_bytes.startswith(b"\xff\xd8\xff"):
+        out_name = "document_photo.jpg"
+    else:
+        out_name = "document_photo.jpg"
+
     await message.answer_photo(
-        BufferedInputFile(result_bytes, filename="document_photo.jpg"),
+        BufferedInputFile(result_bytes, filename=out_name),
         caption="✅ Готово!",
+    )
+    await message.answer_document(
+        BufferedInputFile(result_bytes, filename=out_name),
+        # caption="📎 Тот же снимок файлом (без сжатия превью в чате).",
     )
 
     await status.delete()
