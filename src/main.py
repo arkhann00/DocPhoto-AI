@@ -1,10 +1,12 @@
 import asyncio
 import logging
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
 from src.config import load_config
+from src.db import Database
 from src.handlers import router
 from src.ai_processor import AIProcessor
 
@@ -25,8 +27,15 @@ async def main() -> None:
     )
     dp = Dispatcher()
 
+    db = Database(
+        Path(config.database_path),
+        initial_balance=config.initial_free_generations,
+    )
+    await db.connect()
+
     ai = AIProcessor(api_key=config.bot.bothub_api_key)
     dp["ai"] = ai
+    dp["db"] = db
 
     dp.include_router(router)
 
@@ -34,6 +43,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot)
     finally:
+        await db.close()
         await ai.close()
         await bot.session.close()
 

@@ -7,10 +7,14 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from src.ai_processor import AIProcessor, AIProcessingError
+from src.constants import TARIFF_PACKAGES, get_tariff
+from src.db import Database
 
 logger = logging.getLogger(__name__)
 router = Router()
 
+
+# ── keyboards ────────────────────────────────────────────────
 
 def main_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -18,8 +22,26 @@ def main_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📖 Инструкция", callback_data="action:help")],
         [InlineKeyboardButton(text="📋 Требования к фото", callback_data="help:requirements")],
         [InlineKeyboardButton(text="💡 Советы", callback_data="help:tips")],
+        [InlineKeyboardButton(text="💵 Баланс", callback_data="balance")],
     ])
 
+
+def back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ В меню", callback_data="action:back")],
+    ])
+
+
+def balance_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text=p.button_label, callback_data=f"buy:{p.id}")]
+        for p in TARIFF_PACKAGES
+    ]
+    rows.append([InlineKeyboardButton(text="◀️ В меню", callback_data="action:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ── texts ────────────────────────────────────────────────────
 
 WELCOME_TEXT = (
     "👋 Привет! Я бот для создания фото на документы.\n\n"
@@ -60,10 +82,7 @@ TIPS_TEXT = (
 )
 
 
-def back_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="◀️ В меню", callback_data="action:back")],
-    ])
+# ── helpers ──────────────────────────────────────────────────
 
 async def _safe_edit_text(
     callback: CallbackQuery,
@@ -79,15 +98,23 @@ async def _safe_edit_text(
             parse_mode=parse_mode,
         )
     except TelegramBadRequest as e:
-        # Happens when user taps the same button twice:
-        # "message is not modified"
         if "message is not modified" in str(e):
             return
         raise
 
 
+def _username(message_or_cb) -> str:
+    user = getattr(message_or_cb, "from_user", None)
+    if user is None:
+        return ""
+    return user.username or user.first_name or ""
+
+
+# ── /start & /help ───────────────────────────────────────────
+
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, db: Database) -> None:
+    await db.get_or_create_user(message.from_user.id, _username(message))
     await message.answer(WELCOME_TEXT, reply_markup=main_kb())
 
 
@@ -96,9 +123,10 @@ async def cmd_help(message: Message) -> None:
     await message.answer(INSTRUCTION_TEXT, reply_markup=back_kb(), parse_mode="HTML")
 
 
+# ── menu callbacks ───────────────────────────────────────────
+
 @router.callback_query(F.data == "action:create")
 async def action_create(callback: CallbackQuery) -> None:
-    # Answer ASAP to avoid "query is too old"
     await callback.answer()
     await _safe_edit_text(
         callback,
@@ -146,8 +174,62 @@ async def action_back(callback: CallbackQuery) -> None:
     await _safe_edit_text(callback, WELCOME_TEXT, reply_markup=main_kb())
 
 
+# ── balance ──────────────────────────────────────────────────
+
+@router.callback_query(F.data == "balance")
+async def show_balance(callback: CallbackQuery, db: Database) -> None:
+    await callback.answer()
+    user = await db.get_or_create_user(callback.from_user.id, _username(callback))
+    balance = user["balance"]
+    text = (
+        f"💵 <b>Баланс</b>\n\n"
+        f"Доступно генераций: <b>{balance}</b>\n\n"
+        f"Выбери пакет для пополнения 👇"
+    )
+    await _safe_edit_text(callback, text, reply_markup=balance_kb(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("buy:"))
+async def buy_package(callback: CallbackQuery, db: Database) -> None:
+    package_id = callback.data.split(":", 1)[1]
+    tariff = get_tariff(package_id)
+    if tariff is None:
+        await callback.answer("Тариф не найден", show_alert=True)
+        return
+
+    await callback.answer()
+
+    user = await db.get_or_create_user(callback.from_user.id, _username(callback))
+    new_balance = await db.add_balance(callback.from_user.id, tariff.generations)
+
+    text = (
+        f"✅ Пакет <b>«{tariff.generations} генераций»</b> активирован!\n\n"
+        f"Баланс: <b>{new_balance}</b> генераций\n\n"
+        f"<i>(Оплата пока не подключена — генерации начислены бесплатно)</i>"
+    )
+    await _safe_edit_text(callback, text, reply_markup=back_kb(), parse_mode="HTML")
+
+
+# ── photo generation ─────────────────────────────────────────
+
 @router.message(F.photo)
-async def handle_photo(message: Message, bot: Bot, ai: AIProcessor) -> None:
+async def handle_photo(message: Message, bot: Bot, ai: AIProcessor, db: Database) -> None:
+    user = await db.get_or_create_user(message.from_user.id, _username(message))
+
+    if user["balance"] <= 0:
+        await message.answer(
+            "❌ У тебя закончились генерации.\n\n"
+            "Пополни баланс, чтобы продолжить 👇",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="💵 Баланс", callback_data="balance")],
+            ]),
+        )
+        return
+
+    if not await db.consume_generation(message.from_user.id):
+        await message.answer("❌ Не удалось списать генерацию. Попробуй ещё раз.")
+        return
+
     status = await message.answer("⏳ Генерирую фото…")
 
     file = await bot.get_file(message.photo[-1].file_id)
@@ -156,10 +238,12 @@ async def handle_photo(message: Message, bot: Bot, ai: AIProcessor) -> None:
     try:
         result_bytes = await ai.generate_document_photo(photo_bytes)
     except AIProcessingError as e:
+        await db.add_balance(message.from_user.id, 1)
         await status.edit_text(f"❌ {e}", reply_markup=back_kb())
         return
     except Exception:
         logger.exception("AI processing failed")
+        await db.add_balance(message.from_user.id, 1)
         await status.edit_text(
             "❌ Ошибка генерации. Попробуй ещё раз.",
             reply_markup=back_kb(),
@@ -179,8 +263,13 @@ async def handle_photo(message: Message, bot: Bot, ai: AIProcessor) -> None:
     )
     await message.answer_document(
         BufferedInputFile(result_bytes, filename=out_name),
-        # caption="📎 Тот же снимок файлом (без сжатия превью в чате).",
     )
 
     await status.delete()
-    await message.answer("Хочешь ещё?", reply_markup=main_kb())
+
+    remaining = await db.get_balance(message.from_user.id)
+    await message.answer(
+        f"Осталось генераций: <b>{remaining}</b>\n\nХочешь ещё?",
+        reply_markup=main_kb(),
+        parse_mode="HTML",
+    )

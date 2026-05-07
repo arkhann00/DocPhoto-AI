@@ -1,3 +1,30 @@
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class TariffPackage:
+    id: str
+    generations: int
+    price_rub: int
+
+    @property
+    def button_label(self) -> str:
+        return f"{self.generations} шт — {self.price_rub} ₽"
+
+
+TARIFF_PACKAGES: tuple[TariffPackage, ...] = (
+    TariffPackage("pack_5", 5, 99),
+    TariffPackage("pack_15", 15, 249),
+    TariffPackage("pack_50", 50, 699),
+)
+
+_PACKAGE_BY_ID = {p.id: p for p in TARIFF_PACKAGES}
+
+
+def get_tariff(package_id: str) -> TariffPackage | None:
+    return _PACKAGE_BY_ID.get(package_id)
+
+
 AI_PROMPT = (
     "Преобразуй эту исходную фотографию в строгое фото на внутренний паспорт РФ "
     "без изменения личности человека. "
