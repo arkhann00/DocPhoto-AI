@@ -184,6 +184,7 @@ async def show_balance(callback: CallbackQuery, db: Database) -> None:
     text = (
         f"💵 <b>Баланс</b>\n\n"
         f"Доступно генераций: <b>{balance}</b>\n\n"
+        f"<i>1 генерация = 1 готовое фото на документы</i>\n\n"
         f"Выбери пакет для пополнения 👇"
     )
     await _safe_edit_text(callback, text, reply_markup=balance_kb(), parse_mode="HTML")
@@ -205,6 +206,7 @@ async def buy_package(callback: CallbackQuery, db: Database) -> None:
     text = (
         f"✅ Пакет <b>«{tariff.generations} генераций»</b> активирован!\n\n"
         f"Баланс: <b>{new_balance}</b> генераций\n\n"
+        f"<i>Эти генерации используются для создания фото на документы</i>\n\n"
         f"<i>(Оплата пока не подключена — генерации начислены бесплатно)</i>"
     )
     await _safe_edit_text(callback, text, reply_markup=back_kb(), parse_mode="HTML")
