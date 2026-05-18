@@ -36,6 +36,7 @@ async def main() -> None:
     ai = AIProcessor(api_key=config.bot.bothub_api_key)
     dp["ai"] = ai
     dp["db"] = db
+    dp["payments"] = config.payments
 
     dp.include_router(router)
 

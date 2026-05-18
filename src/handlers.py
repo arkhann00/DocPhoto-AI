@@ -3,10 +3,18 @@ import logging
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart, Command
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import Message, CallbackQuery, BufferedInputFile
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    BufferedInputFile,
+    LabeledPrice,
+    PreCheckoutQuery,
+    SuccessfulPayment,
+)
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from src.ai_processor import AIProcessor, AIProcessingError
+from src.config import PaymentsConfig
 from src.constants import TARIFF_PACKAGES, get_tariff
 from src.db import Database
 
@@ -80,6 +88,27 @@ TIPS_TEXT = (
     "• Если результат не устроил — попробуй другое фото\n"
     "• Бот не меняет черты лица, только фон и кадрирование"
 )
+
+
+PAYLOAD_PREFIX = "balance_topup"
+
+
+def _build_payment_payload(package_id: str, telegram_id: int) -> str:
+    return f"{PAYLOAD_PREFIX}:{package_id}:{telegram_id}"
+
+
+def _parse_payment_payload(payload: str) -> tuple[str, int] | None:
+    parts = payload.split(":")
+    if len(parts) != 3 or parts[0] != PAYLOAD_PREFIX:
+        return None
+
+    package_id = parts[1]
+    try:
+        telegram_id = int(parts[2])
+    except ValueError:
+        return None
+
+    return package_id, telegram_id
 
 
 # ── helpers ──────────────────────────────────────────────────
@@ -191,25 +220,172 @@ async def show_balance(callback: CallbackQuery, db: Database) -> None:
 
 
 @router.callback_query(F.data.startswith("buy:"))
-async def buy_package(callback: CallbackQuery, db: Database) -> None:
+async def buy_package(
+    callback: CallbackQuery,
+    db: Database,
+    payments: PaymentsConfig,
+) -> None:
     package_id = callback.data.split(":", 1)[1]
     tariff = get_tariff(package_id)
     if tariff is None:
         await callback.answer("Тариф не найден", show_alert=True)
         return
 
-    await callback.answer()
+    if not payments.is_configured:
+        await callback.answer(
+            "Платежи временно недоступны. Попробуй позже.",
+            show_alert=True,
+        )
+        return
 
-    user = await db.get_or_create_user(callback.from_user.id, _username(callback))
-    new_balance = await db.add_balance(callback.from_user.id, tariff.generations)
+    await db.get_or_create_user(callback.from_user.id, _username(callback))
+    payload = _build_payment_payload(tariff.id, callback.from_user.id)
+
+    try:
+        await callback.bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title="Пополнение баланса",
+            description=(
+                f"Пакет на {tariff.generations} генераций.\n"
+                "После оплаты генерации будут начислены автоматически."
+            ),
+            provider_token=payments.provider_token,
+            currency=payments.currency,
+            prices=[
+                LabeledPrice(
+                    label=f"{tariff.generations} генераций",
+                    amount=tariff.price_rub * 100,
+                )
+            ],
+            payload=payload,
+            start_parameter="balance_topup",
+            max_tip_amount=0,
+        )
+    except TelegramBadRequest:
+        logger.exception("Failed to send payment invoice")
+        await callback.answer(
+            "Не удалось открыть оплату. Напиши боту в личку и нажми /start.",
+            show_alert=True,
+        )
+        return
+
+    await callback.answer("Счёт на оплату отправлен")
 
     text = (
-        f"✅ Пакет <b>«{tariff.generations} генераций»</b> активирован!\n\n"
-        f"Баланс: <b>{new_balance}</b> генераций\n\n"
-        f"<i>Эти генерации используются для создания фото на документы</i>\n\n"
-        f"<i>(Оплата пока не подключена — генерации начислены бесплатно)</i>"
+        "💳 <b>Счёт сформирован</b>\n\n"
+        f"Пакет: <b>{tariff.generations} генераций</b> за <b>{tariff.price_rub} ₽</b>\n\n"
+        "После успешной оплаты генерации начислятся автоматически."
     )
     await _safe_edit_text(callback, text, reply_markup=back_kb(), parse_mode="HTML")
+
+
+@router.pre_checkout_query()
+async def process_pre_checkout(
+    pre_checkout_query: PreCheckoutQuery,
+    bot: Bot,
+    payments: PaymentsConfig,
+) -> None:
+    parsed_payload = _parse_payment_payload(pre_checkout_query.invoice_payload)
+    if parsed_payload is None:
+        await bot.answer_pre_checkout_query(
+            pre_checkout_query.id,
+            ok=False,
+            error_message="Платёж не прошёл. Открой баланс и попробуй снова.",
+        )
+        return
+
+    package_id, payload_telegram_id = parsed_payload
+    tariff = get_tariff(package_id)
+    if tariff is None or payload_telegram_id != pre_checkout_query.from_user.id:
+        await bot.answer_pre_checkout_query(
+            pre_checkout_query.id,
+            ok=False,
+            error_message="Платёж не прошёл. Попробуй заново.",
+        )
+        return
+
+    if pre_checkout_query.currency != payments.currency:
+        await bot.answer_pre_checkout_query(
+            pre_checkout_query.id,
+            ok=False,
+            error_message="Неверная валюта платежа.",
+        )
+        return
+
+    expected_amount_minor = tariff.price_rub * 100
+    if pre_checkout_query.total_amount != expected_amount_minor:
+        await bot.answer_pre_checkout_query(
+            pre_checkout_query.id,
+            ok=False,
+            error_message="Неверная сумма платежа.",
+        )
+        return
+
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+
+@router.message(F.successful_payment)
+async def successful_payment_handler(
+    message: Message,
+    db: Database,
+    payments: PaymentsConfig,
+) -> None:
+    payment: SuccessfulPayment = message.successful_payment
+    if payment is None:
+        return
+
+    parsed_payload = _parse_payment_payload(payment.invoice_payload)
+    if parsed_payload is None:
+        logger.warning("Successful payment with invalid payload: %s", payment.invoice_payload)
+        return
+
+    package_id, payload_telegram_id = parsed_payload
+    tariff = get_tariff(package_id)
+    if tariff is None:
+        logger.warning("Successful payment with unknown package: %s", package_id)
+        return
+    if payload_telegram_id != message.from_user.id:
+        logger.warning(
+            "Successful payment user mismatch. payload=%s, actual=%s",
+            payload_telegram_id,
+            message.from_user.id,
+        )
+        return
+
+    expected_amount_minor = tariff.price_rub * 100
+    if payment.currency != payments.currency or payment.total_amount != expected_amount_minor:
+        logger.warning(
+            "Successful payment validation failed: currency=%s amount=%s expected=%s",
+            payment.currency,
+            payment.total_amount,
+            expected_amount_minor,
+        )
+        return
+
+    is_new_payment, balance = await db.apply_successful_payment(
+        telegram_id=message.from_user.id,
+        username=_username(message),
+        package_id=tariff.id,
+        amount_minor=payment.total_amount,
+        currency=payment.currency,
+        generations=tariff.generations,
+        telegram_payment_charge_id=payment.telegram_payment_charge_id,
+        provider_payment_charge_id=payment.provider_payment_charge_id or "",
+    )
+
+    if is_new_payment:
+        text = (
+            "✅ <b>Оплата прошла успешно</b>\n\n"
+            f"Начислено: <b>{tariff.generations}</b> генераций\n"
+            f"Текущий баланс: <b>{balance}</b> генераций"
+        )
+    else:
+        text = (
+            "ℹ️ Этот платёж уже был учтён ранее.\n\n"
+            f"Текущий баланс: <b>{balance}</b> генераций"
+        )
+
+    await message.answer(text, reply_markup=main_kb(), parse_mode="HTML")
 
 
 # ── photo generation ─────────────────────────────────────────

@@ -13,6 +13,21 @@ CREATE TABLE IF NOT EXISTS users (
     balance       INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS payments (
+    id                           INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_payment_charge_id   TEXT    NOT NULL UNIQUE,
+    provider_payment_charge_id   TEXT    NOT NULL DEFAULT '',
+    telegram_id                  INTEGER NOT NULL,
+    package_id                   TEXT    NOT NULL,
+    amount_minor                 INTEGER NOT NULL,
+    currency                     TEXT    NOT NULL,
+    generations                  INTEGER NOT NULL,
+    created_at                   TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_payments_telegram_id
+    ON payments (telegram_id);
 """
 
 
@@ -93,6 +108,60 @@ class Database:
         )
         await conn.commit()
         return await self.get_balance(telegram_id)
+
+    async def apply_successful_payment(
+        self,
+        *,
+        telegram_id: int,
+        username: str,
+        package_id: str,
+        amount_minor: int,
+        currency: str,
+        generations: int,
+        telegram_payment_charge_id: str,
+        provider_payment_charge_id: str,
+    ) -> tuple[bool, int]:
+        """
+        Save successful payment and top up balance atomically.
+
+        Returns (is_new_payment, current_balance).
+        """
+        conn = self._conn_or_raise()
+        await self.get_or_create_user(telegram_id, username)
+
+        async with conn.execute(
+            """
+            INSERT OR IGNORE INTO payments (
+                telegram_payment_charge_id,
+                provider_payment_charge_id,
+                telegram_id,
+                package_id,
+                amount_minor,
+                currency,
+                generations
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                telegram_payment_charge_id,
+                provider_payment_charge_id,
+                telegram_id,
+                package_id,
+                amount_minor,
+                currency,
+                generations,
+            ),
+        ) as cur:
+            inserted = cur.rowcount > 0
+
+        if not inserted:
+            return False, await self.get_balance(telegram_id)
+
+        await conn.execute(
+            "UPDATE users SET balance = balance + ? WHERE telegram_id = ?",
+            (generations, telegram_id),
+        )
+        await conn.commit()
+        return True, await self.get_balance(telegram_id)
 
     async def consume_generation(self, telegram_id: int) -> bool:
         """Deduct 1 generation if balance > 0. Returns True on success."""
