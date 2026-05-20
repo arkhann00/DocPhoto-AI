@@ -159,6 +159,8 @@ async def action_create(callback: CallbackQuery) -> None:
     await callback.answer()
     await _safe_edit_text(
         callback,
+        "⚠️ Перед первой генерацией внимательно следуй инструкции — "
+        "это важно для качества генерации.\n\n"
         "📸 Отправь фото — AI сделает документное фото.",
         reply_markup=back_kb(),
     )

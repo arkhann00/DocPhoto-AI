@@ -13,7 +13,7 @@ class TariffPackage:
 
 
 TARIFF_PACKAGES: tuple[TariffPackage, ...] = (
-    TariffPackage("pack_2", 2, 49),
+    # TariffPackage("pack_2", 2, 49),
     TariffPackage("pack_5", 5, 99),
     TariffPackage("pack_15", 15, 249),
     TariffPackage("pack_50", 50, 699),
